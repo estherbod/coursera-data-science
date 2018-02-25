@@ -1,0 +1,123 @@
+---
+title: "Predicting weight lifting manner"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Introduction
+
+The weight lifting exercise dataset contains data about weight lifting exercise.
+It can be found on http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+6 participants were instructed to perform barbell lifts correctly and incorrectly in 5 different ways, 
+while measuring their movements using an accelerometer on the belt.
+Our goal is to build a model for predicting in which manner an exercise was performed using the data collected by the accelerometer.
+
+## Feature selection
+
+We start by loading the training data and dividing it into training (70%) and validation sets (30%).
+We will train several models on the training data and select the one that performs best on the validation set. 
+This model will then be applied once to the test data.
+
+```{r}
+library(caret)
+set.seed(1234)
+dat <- read.csv("pml-training.csv")
+inTrain <- createDataPartition(dat$classe, p = 0.7, list=TRUE)$Resample1
+training <- dat[inTrain,]
+validation <- dat[-inTrain,]
+```
+
+Using `dim(training)`, we see that the training dataset contains 13737 observations of 160 variables.
+`colnames(training)` shows that the outcome `classe` is the last variable.
+The first 7 variables are metadata about the measurement: the index number of the measurement, the user name, various timetamps and data about the window of the measurement.
+The remaining 152 variables are measurements collected by the accelerometer.
+
+Because the participants were instructed to perform the exercises in different ways, 
+it seems unlikely that the user name, timestamp or window of the measurement are related to the classe.
+Therefore we restrict the data to the final 153 columns.
+
+```{r}
+training <- training[,-c(1:7)]
+```
+
+With `table(apply(training, 2, function(column) {sum(is.na(column))}))` we see that 86 columns have no missing values, while the remaining 67 variables are missing in 13453 observations (out of 13737 observations in the training data).
+We omit these variables:
+
+```{r}
+withoutNA <- apply(training, 2, function(column) {sum(is.na(column))}) == 0
+training <- training[,withoutNA]
+```
+
+There are also some variables that have `#DIV/0!` as a value.
+This seems to be a mistake in the measurements.
+The number of observations with value `#DIV/0!` ranges from 0 to 284 observations.
+Although 284 is relatively small compared to the total number of observations,
+we choose to omit these variables at the first try of building a model to have a clean dataset.
+If the models turn out to have low accuracy, we will take a closer look at these variables and might include them again.
+
+```{r}
+withoutDiv0 <- apply(training, 2, function(column) {sum(column == "#DIV/0!")}) == 0
+training <- training[,withoutDiv0]
+```
+
+In this way we selected 52 predictors.
+
+## Training the models
+
+Now we train some models using the caret package.
+Some common choices are Linear Models, Linear Discriminant Analysis, Gradient Boosting Machines, Decision Trees and Random Forests.
+Linear Models are not suited for classification models.
+It turns out the Random Forest take too long to train on my laptop.
+So we train three models, using Linear Discriminant Analysis, Gradient Boosting Machines and Decision Trees. 
+10-fold cross validation is used.
+All other parameters are set to the defaults in caret.
+If the accuracy turns out to be low, we will tune the parameters.
+
+```{r}
+train_control <- trainControl(method="cv", number=10)
+modellda <- train(classe ~ ., data=training, method = "lda", trControl=train_control)
+modelgbm <- train(classe ~ ., data=training, method = "gbm", trControl=train_control)
+modelrpart <- train(classe ~ ., data=training, method = "rpart", trControl=train_control)
+```
+
+## Results
+
+Now we estimate the accuracy of the models by comparing the predictions to the outcome on the validation set.
+First we select the same columns of the validation set as we did in the training set.
+
+```{r}
+validation <- validation[,-c(1:7)]
+validation <- validation[,withoutNA]
+validation <- validation[,withoutDiv0]
+```
+Next, we predict the outcome on the validation set using each of the three models.
+We compute the confusion matrices and grab the accuracy.
+
+```{r}
+confusionMatrix(predict(modellda, validation), validation$classe)$overall[1]
+confusionMatrix(predict(modelgbm, validation), validation$classe)$overall[1]
+confusionMatrix(predict(modelrpart, validation), validation$classe)$overall[1]
+```
+
+The reported accuracies are 0.7048428 for LDA, 0.9638063 for GBM and 0.4890399 for the Decision Tree.
+It is clear that GBM is by far the best fitting model with an expected out of sample error of 3.6%.
+The accuracy on the validation set is sufficiently high so we decide to use this as the final model.
+So there is no need to go back to the excluded variables with values `#DIV/0!` or tune parameters of the models.
+It might also be possible to get a slightly better model by combining the predictions of the three models, but there is no need to do this.
+
+## Predicting on the testset
+
+We conclude by applying the GBM model to the testset.
+
+```{r}
+testing <- read.csv("pml-testing.csv")
+testing <- testing[,-c(1:7)]
+testing <- testing[,withoutNA]
+testing <- testing[,withoutDiv0]
+predict(modelgbm, testing)
+```
+
+This gives the predictions B A B A A E D B A A B C B A E E A B B B.
